@@ -34,7 +34,9 @@ MCP 설정 파일에 다음을 추가하세요:
     "notebook-editor": {
       "command": "python",
       "args": ["-m", "notebook_mcp.server"],
-      "cwd": "d:\\PythonPractice\\notebook-mcp-server\\src"
+      "env": {
+        "PYTHONPATH": "d:\\PythonPractice\\notebook-mcp-server\\src"
+      }
     }
   }
 }
