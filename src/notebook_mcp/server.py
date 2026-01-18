@@ -16,6 +16,7 @@ from mcp.server.fastmcp import FastMCP
 import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell
 import json
+import re
 from typing import Optional, Literal
 from pathlib import Path
 
@@ -367,6 +368,141 @@ def update_cell_metadata(
     return f"✅ 셀 #{cell_index} 메타데이터 수정: {key} = {parsed_value}"
 
 
+# ============================================================
+# MCP 도구들 - 검색 및 교체
+# ============================================================
+
+@mcp.tool()
+def search_notebook(
+    path: str,
+    pattern: str,
+    use_regex: bool = False,
+    case_sensitive: bool = True
+) -> str:
+    """
+    노트북 전체에서 텍스트를 검색합니다.
+    
+    Args:
+        path: 노트북 파일의 절대 경로
+        pattern: 검색할 텍스트 또는 정규식 패턴
+        use_regex: True면 정규식으로 검색 (default: False)
+        case_sensitive: True면 대소문자 구분 (default: True)
+    
+    Returns:
+        검색 결과 (셀 인덱스, 타입, 매칭 내용)
+    """
+    nb = _load_notebook(path)
+    
+    # 검색 플래그 설정
+    flags = 0 if case_sensitive else re.IGNORECASE
+    
+    # 정규식이 아니면 패턴을 이스케이프 처리
+    if not use_regex:
+        pattern = re.escape(pattern)
+    
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"❌ 정규식 오류: {e}"
+    
+    results = []
+    total_matches = 0
+    
+    for i, cell in enumerate(nb.cells):
+        matches = list(regex.finditer(cell.source))
+        if matches:
+            total_matches += len(matches)
+            results.append(f"\n📍 셀 #{i} ({cell.cell_type})")
+            results.append("-" * 40)
+            
+            # 각 매치의 컨텍스트 표시
+            for match in matches:
+                start = max(0, match.start() - 20)
+                end = min(len(cell.source), match.end() + 20)
+                context = cell.source[start:end].replace('\n', '↵')
+                
+                # 매칭 부분 강조
+                match_text = match.group()
+                results.append(f"   ...{context}...")
+                results.append(f"   └─ 매칭: '{match_text}'")
+    
+    if total_matches == 0:
+        return f"🔍 검색 결과 없음: '{pattern}'"
+    
+    header = f"🔍 검색 결과: {total_matches}개 매칭 ('{pattern}')"
+    return header + "\n" + "\n".join(results)
+
+
+@mcp.tool()
+def replace_in_notebook(
+    path: str,
+    pattern: str,
+    replacement: str,
+    use_regex: bool = False,
+    case_sensitive: bool = True,
+    preview_only: bool = True
+) -> str:
+    """
+    노트북 전체에서 텍스트를 일괄 교체합니다.
+    
+    Args:
+        path: 노트북 파일의 절대 경로
+        pattern: 검색할 텍스트 또는 정규식 패턴
+        replacement: 교체할 텍스트
+        use_regex: True면 정규식으로 검색 (default: False)
+        case_sensitive: True면 대소문자 구분 (default: True)
+        preview_only: True면 미리보기만 (실제 교체 안 함), False면 실제 교체 (default: True)
+    
+    Returns:
+        교체 결과 또는 미리보기
+    """
+    nb = _load_notebook(path)
+    
+    # 검색 플래그 설정
+    flags = 0 if case_sensitive else re.IGNORECASE
+    
+    # 정규식이 아니면 패턴을 이스케이프 처리
+    if not use_regex:
+        pattern = re.escape(pattern)
+    
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"❌ 정규식 오류: {e}"
+    
+    changes = []
+    total_replacements = 0
+    
+    for i, cell in enumerate(nb.cells):
+        matches = list(regex.finditer(cell.source))
+        if matches:
+            count = len(matches)
+            total_replacements += count
+            
+            # 변경 전후 미리보기
+            old_preview = cell.source[:50].replace('\n', '↵')
+            new_source = regex.sub(replacement, cell.source)
+            new_preview = new_source[:50].replace('\n', '↵')
+            
+            changes.append(f"\n📝 셀 #{i} ({cell.cell_type}) - {count}개 교체")
+            changes.append(f"   전: {old_preview}...")
+            changes.append(f"   후: {new_preview}...")
+            
+            # 실제 교체 (미리보기가 아닌 경우)
+            if not preview_only:
+                nb.cells[i].source = new_source
+    
+    if total_replacements == 0:
+        return f"🔍 교체 대상 없음: '{pattern}'"
+    
+    if preview_only:
+        header = f"👁️ 미리보기: {total_replacements}개 교체 예정 ('{pattern}' → '{replacement}')"
+        footer = "\n\nℹ️ 실제 교체를 원하면 preview_only=False로 호출하세요."
+        return header + "\n" + "\n".join(changes) + footer
+    else:
+        _save_notebook(nb, path)
+        header = f"✅ 교체 완료: {total_replacements}개 ('{pattern}' → '{replacement}')"
+        return header + "\n" + "\n".join(changes)
 # ============================================================
 # 서버 실행
 # ============================================================
