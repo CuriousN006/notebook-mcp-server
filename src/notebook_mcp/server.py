@@ -504,6 +504,377 @@ def replace_in_notebook(
         header = f"✅ 교체 완료: {total_replacements}개 ('{pattern}' → '{replacement}')"
         return header + "\n" + "\n".join(changes)
 # ============================================================
+# MCP 도구들 - 컨텍스트 및 분석 (Cline 영감)
+# ============================================================
+
+@mcp.tool()
+def get_cell_context(
+    path: str,
+    cell_index: int,
+    context_size: int = 2
+) -> str:
+    """
+    특정 셀과 주변 셀들의 컨텍스트를 구조화된 형태로 반환합니다.
+    
+    AI가 새 코드를 생성하거나 개선할 때 더 나은 컨텍스트를 파악할 수 있도록,
+    대상 셀과 주변 셀들의 정보를 함께 제공합니다.
+    
+    Args:
+        path: 노트북 파일의 절대 경로
+        cell_index: 대상 셀의 인덱스 (0부터 시작)
+        context_size: 앞뒤로 포함할 셀 개수 (기본값: 2)
+    
+    Returns:
+        셀 컨텍스트 정보 (JSON 형식)
+    """
+    nb = _load_notebook(path)
+    _validate_cell_index(nb, cell_index)
+    
+    # 컨텍스트 범위 계산
+    start_idx = max(0, cell_index - context_size)
+    end_idx = min(len(nb.cells), cell_index + context_size + 1)
+    
+    def _extract_cell_info(cell, idx: int, is_target: bool = False) -> dict:
+        """셀 정보를 딕셔너리로 추출"""
+        info = {
+            "index": idx,
+            "cell_type": cell.cell_type,
+            "source": cell.source,
+            "is_target": is_target
+        }
+        
+        # 코드 셀인 경우 추가 정보
+        if cell.cell_type == "code":
+            info["execution_count"] = getattr(cell, "execution_count", None)
+            
+            # 출력 정보 추가
+            if hasattr(cell, "outputs") and cell.outputs:
+                outputs_summary = []
+                for output in cell.outputs:
+                    output_type = output.get("output_type", "unknown")
+                    output_info = {"type": output_type}
+                    
+                    # 출력 내용 미리보기
+                    if output_type == "stream":
+                        text = output.get("text", "")
+                        output_info["preview"] = text[:200] + ("..." if len(text) > 200 else "")
+                    elif output_type in ("execute_result", "display_data"):
+                        data = output.get("data", {})
+                        if "text/plain" in data:
+                            text = "".join(data["text/plain"]) if isinstance(data["text/plain"], list) else data["text/plain"]
+                            output_info["preview"] = text[:200] + ("..." if len(text) > 200 else "")
+                    elif output_type == "error":
+                        output_info["ename"] = output.get("ename", "")
+                        output_info["evalue"] = output.get("evalue", "")
+                    
+                    outputs_summary.append(output_info)
+                info["outputs"] = outputs_summary
+        
+        return info
+    
+    # 컨텍스트 수집
+    context = {
+        "notebook": Path(path).name,
+        "total_cells": len(nb.cells),
+        "context_range": f"{start_idx}-{end_idx - 1}",
+        "cells": []
+    }
+    
+    for idx in range(start_idx, end_idx):
+        is_target = (idx == cell_index)
+        cell_info = _extract_cell_info(nb.cells[idx], idx, is_target)
+        context["cells"].append(cell_info)
+    
+    return json.dumps(context, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_notebook_variables(path: str) -> str:
+    """
+    노트북에서 사용된 import 문과 정의된 변수/함수/클래스를 추출합니다.
+    
+    AI가 새 코드를 생성할 때 이미 존재하는 import와 변수를 
+    파악할 수 있도록 정적 분석을 수행합니다.
+    
+    Args:
+        path: 노트북 파일의 절대 경로
+    
+    Returns:
+        추출된 import 및 정의 목록
+    """
+    nb = _load_notebook(path)
+    
+    imports = []
+    variables = []
+    functions = []
+    classes = []
+    
+    # 정규식 패턴들
+    import_pattern = re.compile(r'^(?:from\s+[\w.]+\s+)?import\s+.+', re.MULTILINE)
+    variable_pattern = re.compile(r'^(\w+)\s*=\s*(?!.*def\s|.*class\s)', re.MULTILINE)
+    function_pattern = re.compile(r'^def\s+(\w+)\s*\(', re.MULTILINE)
+    class_pattern = re.compile(r'^class\s+(\w+)\s*[\(:]', re.MULTILINE)
+    
+    for i, cell in enumerate(nb.cells):
+        if cell.cell_type != "code":
+            continue
+        
+        source = cell.source
+        
+        # import 문 추출
+        for match in import_pattern.finditer(source):
+            imports.append({
+                "cell": i,
+                "statement": match.group().strip()
+            })
+        
+        # 변수 정의 추출
+        for match in variable_pattern.finditer(source):
+            var_name = match.group(1)
+            if not var_name.startswith("_"):  # private 변수 제외
+                variables.append({
+                    "cell": i,
+                    "name": var_name
+                })
+        
+        # 함수 정의 추출
+        for match in function_pattern.finditer(source):
+            functions.append({
+                "cell": i,
+                "name": match.group(1)
+            })
+        
+        # 클래스 정의 추출
+        for match in class_pattern.finditer(source):
+            classes.append({
+                "cell": i,
+                "name": match.group(1)
+            })
+    
+    result = []
+    result.append(f"📦 노트북 분석: {Path(path).name}")
+    result.append("=" * 50)
+    
+    if imports:
+        result.append(f"\n📥 Import 문 ({len(imports)}개):")
+        for imp in imports:
+            result.append(f"   [셀 {imp['cell']}] {imp['statement']}")
+    
+    if variables:
+        result.append(f"\n📊 변수 ({len(variables)}개):")
+        var_names = [v['name'] for v in variables]
+        result.append(f"   {', '.join(var_names)}")
+    
+    if functions:
+        result.append(f"\n🔧 함수 ({len(functions)}개):")
+        for func in functions:
+            result.append(f"   [셀 {func['cell']}] def {func['name']}()")
+    
+    if classes:
+        result.append(f"\n🏛️ 클래스 ({len(classes)}개):")
+        for cls in classes:
+            result.append(f"   [셀 {cls['cell']}] class {cls['name']}")
+    
+    if not any([imports, variables, functions, classes]):
+        result.append("\n(정의된 항목이 없습니다)")
+    
+    return "\n".join(result)
+
+
+@mcp.tool()
+def read_cell_output(path: str, cell_index: int) -> str:
+    """
+    셀의 출력 내용을 상세히 반환합니다.
+    
+    read_cell과 달리 출력의 실제 내용을 포함하여 반환합니다.
+    스트림 출력, 실행 결과, 에러 등 모든 출력 타입을 처리합니다.
+    
+    Args:
+        path: 노트북 파일의 절대 경로
+        cell_index: 읽을 셀의 인덱스 (0부터 시작)
+    
+    Returns:
+        셀 출력의 상세 내용
+    """
+    nb = _load_notebook(path)
+    _validate_cell_index(nb, cell_index)
+    
+    cell = nb.cells[cell_index]
+    
+    if cell.cell_type != "code":
+        return f"ℹ️ 셀 #{cell_index}은 {cell.cell_type} 셀입니다. 출력이 없습니다."
+    
+    if not hasattr(cell, "outputs") or not cell.outputs:
+        return f"ℹ️ 셀 #{cell_index}에 출력이 없습니다."
+    
+    result = []
+    result.append(f"📤 셀 #{cell_index} 출력 ({len(cell.outputs)}개)")
+    result.append("=" * 50)
+    
+    for i, output in enumerate(cell.outputs):
+        output_type = output.get("output_type", "unknown")
+        result.append(f"\n[{i}] {output_type}")
+        result.append("-" * 40)
+        
+        if output_type == "stream":
+            # stdout/stderr 출력
+            name = output.get("name", "stdout")
+            text = output.get("text", "")
+            result.append(f"({name})")
+            result.append(text)
+            
+        elif output_type == "execute_result":
+            # 실행 결과
+            data = output.get("data", {})
+            exec_count = output.get("execution_count", "?")
+            result.append(f"(execution_count: {exec_count})")
+            
+            if "text/plain" in data:
+                text = data["text/plain"]
+                if isinstance(text, list):
+                    text = "".join(text)
+                result.append(text)
+            
+            if "text/html" in data:
+                result.append("\n[HTML 출력 있음 - text/html]")
+                
+        elif output_type == "display_data":
+            # 디스플레이 데이터 (시각화 등)
+            data = output.get("data", {})
+            
+            if "text/plain" in data:
+                text = data["text/plain"]
+                if isinstance(text, list):
+                    text = "".join(text)
+                result.append(text)
+            
+            # 이미지 타입 확인
+            image_types = ["image/png", "image/jpeg", "image/svg+xml"]
+            for img_type in image_types:
+                if img_type in data:
+                    result.append(f"\n[이미지 출력 있음 - {img_type}]")
+                    break
+                    
+        elif output_type == "error":
+            # 에러 출력
+            ename = output.get("ename", "Error")
+            evalue = output.get("evalue", "")
+            result.append(f"❌ {ename}: {evalue}")
+            
+            traceback = output.get("traceback", [])
+            if traceback:
+                result.append("\nTraceback:")
+                # ANSI 코드 제거
+                ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+                for line in traceback[-5:]:  # 마지막 5줄만
+                    clean_line = ansi_escape.sub('', line)
+                    result.append(clean_line)
+    
+    return "\n".join(result)
+
+
+# ============================================================
+# MCP 도구들 - 셀 조작 확장
+# ============================================================
+
+@mcp.tool()
+def duplicate_cell(path: str, cell_index: int) -> str:
+    """
+    셀을 복제하여 바로 아래에 삽입합니다.
+    
+    실험이나 반복 작업 시 기존 셀을 복사해서 수정할 때 유용합니다.
+    셀의 소스, 타입, 메타데이터가 모두 복사됩니다. (출력은 제외)
+    
+    Args:
+        path: 노트북 파일의 절대 경로
+        cell_index: 복제할 셀의 인덱스 (0부터 시작)
+    
+    Returns:
+        성공 메시지
+    """
+    nb = _load_notebook(path)
+    _validate_cell_index(nb, cell_index)
+    
+    original_cell = nb.cells[cell_index]
+    
+    # 새 셀 생성 (출력 제외)
+    if original_cell.cell_type == "code":
+        new_cell = new_code_cell(source=original_cell.source)
+    else:
+        new_cell = new_markdown_cell(source=original_cell.source)
+    
+    # 메타데이터 복사
+    new_cell.metadata = dict(original_cell.metadata)
+    
+    # 바로 아래에 삽입
+    insert_position = cell_index + 1
+    nb.cells.insert(insert_position, new_cell)
+    
+    _save_notebook(nb, path)
+    
+    preview = original_cell.source[:40].replace('\n', ' ')
+    return (
+        f"📋 셀 #{cell_index} 복제 완료\n"
+        f"   새 셀 위치: #{insert_position}\n"
+        f"   내용: {preview}..."
+    )
+
+
+@mcp.tool()
+def change_cell_type(
+    path: str,
+    cell_index: int,
+    new_type: Literal["code", "markdown"]
+) -> str:
+    """
+    셀의 타입을 변경합니다 (code ↔ markdown).
+    
+    코드 셀을 마크다운으로 변환하면 출력과 execution_count가 제거됩니다.
+    소스 내용은 그대로 유지됩니다.
+    
+    Args:
+        path: 노트북 파일의 절대 경로
+        cell_index: 변경할 셀의 인덱스 (0부터 시작)
+        new_type: 변경할 셀 타입 ("code" 또는 "markdown")
+    
+    Returns:
+        성공 메시지
+    """
+    nb = _load_notebook(path)
+    _validate_cell_index(nb, cell_index)
+    
+    old_cell = nb.cells[cell_index]
+    old_type = old_cell.cell_type
+    
+    if old_type == new_type:
+        return f"ℹ️ 셀 #{cell_index}은 이미 {new_type} 타입입니다."
+    
+    # 새 셀 생성 (소스 유지)
+    source = old_cell.source
+    
+    if new_type == "code":
+        new_cell = new_code_cell(source=source)
+    else:
+        new_cell = new_markdown_cell(source=source)
+    
+    # 메타데이터 복사 (가능한 것만)
+    for key, value in old_cell.metadata.items():
+        new_cell.metadata[key] = value
+    
+    # 셀 교체
+    nb.cells[cell_index] = new_cell
+    
+    _save_notebook(nb, path)
+    
+    preview = source[:40].replace('\n', ' ')
+    return (
+        f"🔄 셀 #{cell_index} 타입 변경 완료\n"
+        f"   {old_type} → {new_type}\n"
+        f"   내용: {preview}..."
+    )
+
+
+# ============================================================
 # 서버 실행
 # ============================================================
 
