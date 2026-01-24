@@ -13,11 +13,12 @@ MCP(Model Context Protocol)란?
 """
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ImageContent, TextContent
 import nbformat
 from nbformat.v4 import new_code_cell, new_markdown_cell
 import json
 import re
-from typing import Optional, Literal
+from typing import Optional, Literal, Union
 from pathlib import Path
 
 
@@ -682,19 +683,20 @@ def get_notebook_variables(path: str) -> str:
 
 
 @mcp.tool()
-def read_cell_output(path: str, cell_index: int) -> str:
+def read_cell_output(path: str, cell_index: int) -> list[Union[TextContent, ImageContent]]:
     """
     셀의 출력 내용을 상세히 반환합니다.
     
     read_cell과 달리 출력의 실제 내용을 포함하여 반환합니다.
     스트림 출력, 실행 결과, 에러 등 모든 출력 타입을 처리합니다.
+    이미지 출력이 있는 경우 ImageContent로 반환하여 LLM이 직접 볼 수 있습니다.
     
     Args:
         path: 노트북 파일의 절대 경로
         cell_index: 읽을 셀의 인덱스 (0부터 시작)
     
     Returns:
-        셀 출력의 상세 내용
+        셀 출력의 상세 내용 (텍스트와 이미지의 리스트)
     """
     nb = _load_notebook(path)
     _validate_cell_index(nb, cell_index)
@@ -702,41 +704,71 @@ def read_cell_output(path: str, cell_index: int) -> str:
     cell = nb.cells[cell_index]
     
     if cell.cell_type != "code":
-        return f"ℹ️ 셀 #{cell_index}은 {cell.cell_type} 셀입니다. 출력이 없습니다."
+        return [TextContent(type="text", text=f"ℹ️ 셀 #{cell_index}은 {cell.cell_type} 셀입니다. 출력이 없습니다.")]
     
     if not hasattr(cell, "outputs") or not cell.outputs:
-        return f"ℹ️ 셀 #{cell_index}에 출력이 없습니다."
+        return [TextContent(type="text", text=f"ℹ️ 셀 #{cell_index}에 출력이 없습니다.")]
     
-    result = []
-    result.append(f"📤 셀 #{cell_index} 출력 ({len(cell.outputs)}개)")
-    result.append("=" * 50)
+    # 반환할 콘텐츠 리스트 (텍스트와 이미지 혼합 가능)
+    contents: list[Union[TextContent, ImageContent]] = []
+    
+    # 텍스트 결과 누적용
+    text_parts = []
+    text_parts.append(f"📤 셀 #{cell_index} 출력 ({len(cell.outputs)}개)")
+    text_parts.append("=" * 50)
+    
+    # 지원하는 이미지 MIME 타입 (SVG는 텍스트이므로 Base64 처리가 다름)
+    IMAGE_MIME_TYPES = {
+        "image/png": "image/png",
+        "image/jpeg": "image/jpeg",
+        "image/gif": "image/gif",
+        "image/webp": "image/webp",
+    }
     
     for i, output in enumerate(cell.outputs):
         output_type = output.get("output_type", "unknown")
-        result.append(f"\n[{i}] {output_type}")
-        result.append("-" * 40)
+        text_parts.append(f"\n[{i}] {output_type}")
+        text_parts.append("-" * 40)
         
         if output_type == "stream":
             # stdout/stderr 출력
             name = output.get("name", "stdout")
             text = output.get("text", "")
-            result.append(f"({name})")
-            result.append(text)
+            text_parts.append(f"({name})")
+            text_parts.append(text)
             
         elif output_type == "execute_result":
             # 실행 결과
             data = output.get("data", {})
             exec_count = output.get("execution_count", "?")
-            result.append(f"(execution_count: {exec_count})")
+            text_parts.append(f"(execution_count: {exec_count})")
             
             if "text/plain" in data:
                 text = data["text/plain"]
                 if isinstance(text, list):
                     text = "".join(text)
-                result.append(text)
+                text_parts.append(text)
+            
+            # 이미지가 있는 경우 ImageContent로 추가
+            for mime_type, mcp_mime in IMAGE_MIME_TYPES.items():
+                if mime_type in data:
+                    image_data = data[mime_type]
+                    if isinstance(image_data, list):
+                        image_data = "".join(image_data)
+                    # 현재까지의 텍스트를 먼저 추가
+                    if text_parts:
+                        contents.append(TextContent(type="text", text="\n".join(text_parts)))
+                        text_parts = []
+                    # 이미지 추가
+                    contents.append(ImageContent(
+                        type="image",
+                        data=image_data,
+                        mimeType=mcp_mime
+                    ))
+                    break
             
             if "text/html" in data:
-                result.append("\n[HTML 출력 있음 - text/html]")
+                text_parts.append("[HTML 출력 있음]")
                 
         elif output_type == "display_data":
             # 디스플레이 데이터 (시각화 등)
@@ -746,31 +778,46 @@ def read_cell_output(path: str, cell_index: int) -> str:
                 text = data["text/plain"]
                 if isinstance(text, list):
                     text = "".join(text)
-                result.append(text)
+                text_parts.append(text)
             
-            # 이미지 타입 확인
-            image_types = ["image/png", "image/jpeg", "image/svg+xml"]
-            for img_type in image_types:
-                if img_type in data:
-                    result.append(f"\n[이미지 출력 있음 - {img_type}]")
+            # 이미지가 있는 경우 ImageContent로 추가
+            for mime_type, mcp_mime in IMAGE_MIME_TYPES.items():
+                if mime_type in data:
+                    image_data = data[mime_type]
+                    if isinstance(image_data, list):
+                        image_data = "".join(image_data)
+                    # 현재까지의 텍스트를 먼저 추가
+                    if text_parts:
+                        contents.append(TextContent(type="text", text="\n".join(text_parts)))
+                        text_parts = []
+                    # 이미지 추가
+                    contents.append(ImageContent(
+                        type="image",
+                        data=image_data,
+                        mimeType=mcp_mime
+                    ))
                     break
                     
         elif output_type == "error":
             # 에러 출력
             ename = output.get("ename", "Error")
             evalue = output.get("evalue", "")
-            result.append(f"❌ {ename}: {evalue}")
+            text_parts.append(f"❌ {ename}: {evalue}")
             
             traceback = output.get("traceback", [])
             if traceback:
-                result.append("\nTraceback:")
+                text_parts.append("\nTraceback:")
                 # ANSI 코드 제거
                 ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
                 for line in traceback[-5:]:  # 마지막 5줄만
                     clean_line = ansi_escape.sub('', line)
-                    result.append(clean_line)
+                    text_parts.append(clean_line)
     
-    return "\n".join(result)
+    # 남은 텍스트가 있으면 추가
+    if text_parts:
+        contents.append(TextContent(type="text", text="\n".join(text_parts)))
+    
+    return contents
 
 
 # ============================================================

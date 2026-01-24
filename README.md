@@ -66,9 +66,12 @@ MCP 설정 파일에 다음을 추가하세요:
 |--------|------|
 | `get_cell_context` | 특정 셀과 주변 셀들의 컨텍스트를 JSON으로 반환 |
 | `get_notebook_variables` | 노트북의 import, 변수, 함수, 클래스 추출 |
-| `read_cell_output` | 셀 출력 내용 상세 조회 |
+| `read_cell_output` | 셀 출력 상세 조회 **(이미지 포함 - LLM이 직접 볼 수 있음!)** |
 | `duplicate_cell` | 셀을 복제하여 바로 아래에 삽입 |
 | `change_cell_type` | 셀 타입 변경 (code ↔ markdown) |
+
+> 💡 **이미지 출력 지원**: `read_cell_output`은 matplotlib 그래프 등 이미지 출력을 MCP `ImageContent`로 반환합니다.
+> LLM이 그래프를 직접 보고 분석할 수 있습니다! (지원 형식: PNG, JPEG, GIF, WebP)
 
 ## AI 시스템 프롬프트 (권장)
 
