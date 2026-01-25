@@ -39,3 +39,6 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local test files
+test_notebook.ipynb
