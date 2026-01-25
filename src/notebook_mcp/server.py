@@ -212,31 +212,54 @@ def add_cell(
 
 
 @mcp.tool()
-def update_cell(path: str, cell_index: int, new_source: str) -> str:
+def update_cell(path: str, cell_index: int, old_text: str, new_text: str) -> str:
     """
-    특정 셀의 내용을 수정합니다.
-    
+    특정 셀의 내용을 부분 수정합니다.
+
+    old_text를 찾아서 new_text로 교체합니다.
+    old_text는 셀 내에서 유일해야 합니다. 유일하지 않으면 에러가 발생합니다.
+    전체 셀을 수정하려면 old_text에 셀 전체 내용을 넣으면 됩니다.
+
     Args:
         path: 노트북 파일의 절대 경로
         cell_index: 수정할 셀의 인덱스 (0부터 시작)
-        new_source: 새로운 셀 내용
-    
+        old_text: 교체할 기존 텍스트 (셀 내에서 유일해야 함)
+        new_text: 새로운 텍스트
+
     Returns:
         성공 메시지
     """
     nb = _load_notebook(path)
     _validate_cell_index(nb, cell_index)
-    
-    old_preview = nb.cells[cell_index].source[:30].replace('\n', ' ')
+
+    cell_source = nb.cells[cell_index].source
+
+    # old_text가 셀에 존재하는지 확인
+    if old_text not in cell_source:
+        raise ValueError(
+            f"old_text를 셀 #{cell_index}에서 찾을 수 없습니다.\n"
+            f"찾으려는 텍스트: {old_text[:50]}..."
+        )
+
+    # old_text가 유일한지 확인
+    count = cell_source.count(old_text)
+    if count > 1:
+        raise ValueError(
+            f"old_text가 셀 #{cell_index}에서 {count}번 발견되었습니다.\n"
+            f"더 많은 컨텍스트를 포함하여 유일하게 만들어 주세요."
+        )
+
+    # 교체 수행
+    new_source = cell_source.replace(old_text, new_text)
     nb.cells[cell_index].source = new_source
-    
+
     _save_notebook(nb, path)
-    
-    new_preview = new_source[:30].replace('\n', ' ')
+
+    old_preview = old_text[:30].replace('\n', ' ')
+    new_preview = new_text[:30].replace('\n', ' ')
     return (
         f"✅ 셀 #{cell_index} 수정 완료\n"
-        f"   이전: {old_preview}...\n"
-        f"   이후: {new_preview}..."
+        f"   변경: {old_preview}... → {new_preview}..."
     )
 
 
