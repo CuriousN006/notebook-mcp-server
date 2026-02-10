@@ -7,42 +7,48 @@ Jupyter 노트북(.ipynb) 파일을 편집할 수 있는 MCP(Model Context Proto
 ## 설치
 
 ```bash
-git clone https://github.com/CuriousN006/notebook-mcp-server.git
-cd notebook-mcp-server
-pip install -e .
+pip install notebook-mcp-server
 ```
 
-또는 uv 사용 시:
+또는 [uv](https://astral.sh/uv) 사용 시:
 
 ```bash
-cd notebook-mcp-server
-uv pip install -e .
+uv pip install notebook-mcp-server
 ```
 
 ## 사용법
 
-### 직접 실행
+### 1. Antigravity/VS Code에 등록
 
-```bash
-python -m notebook_mcp.server
-```
-
-### Antigravity/VS Code에 등록
-
-MCP 설정 파일에 다음을 추가하세요:
+`mcpSettings.json` (또는 Claude Desktop 설정)에 다음을 추가하세요. 이제 복잡한 경로 설정 없이 명령어 하나로 실행됩니다!
 
 ```json
 {
   "mcpServers": {
     "notebook-editor": {
-      "command": "python",
-      "args": ["-m", "notebook_mcp.server"],
-      "env": {
-        "PYTHONPATH": "/path/to/notebook-mcp-server/src"
-      }
+      "command": "notebook-mcp"
     }
   }
 }
+```
+
+또는 설치 없이 바로 실행(uv 사용 시)하려면:
+
+```json
+{
+  "mcpServers": {
+    "notebook-editor": {
+      "command": "uvx",
+      "args": ["notebook-mcp-server"]
+    }
+  }
+}
+```
+
+### 2. 직접 실행 (명령줄)
+
+```bash
+notebook-mcp
 ```
 
 ## 제공 도구
